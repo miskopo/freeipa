@@ -9,15 +9,56 @@ installed.
 
 from __future__ import absolute_import
 
+import os
+import re
+
 import pytest
 from ipalib.constants import DOMAIN_LEVEL_0
+import ipaplatform
 from ipaplatform.constants import constants
 from ipaplatform.paths import paths
 from ipatests.pytest_ipa.integration.env_config import get_global_config
 from ipatests.test_integration.base import IntegrationTest
 from ipatests.pytest_ipa.integration import tasks
+from ipatests.test_integration.test_caless import CALessBase, ipa_certs_cleanup
 
 config = get_global_config()
+
+
+def create_broken_resolv_conf(master):
+    # Force a broken resolv.conf to simulate a bad response to
+    # reverse zone lookups
+    master.run_command([
+        '/usr/bin/mv',
+        paths.RESOLV_CONF,
+        '%s.sav' % paths.RESOLV_CONF
+    ])
+
+    contents = "# Set as broken by ipatests\nnameserver 127.0.0.2\n"
+    master.put_file_contents(paths.RESOLV_CONF, contents)
+
+
+def restore_resolv_conf(master):
+    if os.path.exists('%s.sav' % paths.RESOLV_CONF):
+        master.run_command([
+            '/usr/bin/mv',
+            '%s.sav' % paths.RESOLV_CONF,
+            paths.RESOLV_CONF
+        ])
+
+
+def server_install_setup(func):
+    def wrapped(*args):
+        master = args[0].master
+        create_broken_resolv_conf(master)
+        try:
+            func(*args)
+        finally:
+            tasks.uninstall_master(master, clean=False)
+            restore_resolv_conf(master)
+            ipa_certs_cleanup(master)
+    return wrapped
+
 
 class InstallTestBase1(IntegrationTest):
 
@@ -66,10 +107,6 @@ class InstallTestBase2(IntegrationTest):
     def install(cls, mh):
         tasks.install_master(cls.master, setup_dns=False)
 
-    def test_replica0_with_ca_kra_dns_install(self):
-        tasks.install_replica(self.master, self.replicas[0], setup_ca=True,
-                              setup_kra=True, setup_dns=True)
-
     def test_replica1_with_ca_dns_install(self):
         tasks.install_replica(self.master, self.replicas[1], setup_ca=True,
                               setup_dns=True)
@@ -115,7 +152,6 @@ class ADTrustInstallTestBase(IntegrationTest):
 # Master X Replicas installation tests
 ##
 
-@pytest.mark.xfail(reason="FreeIPA ticket 7008")
 class TestInstallWithCA1(InstallTestBase1):
 
     @classmethod
@@ -127,28 +163,24 @@ class TestInstallWithCA1(InstallTestBase1):
     def test_replica1_ipa_kra_install(self):
         super(TestInstallWithCA1, self).test_replica1_ipa_kra_install()
 
+    @pytest.mark.xfail
     @pytest.mark.skipif(config.domain_level == DOMAIN_LEVEL_0,
                         reason='does not work on DOMAIN_LEVEL_0 by design')
     def test_replica2_with_ca_kra_install(self):
         super(TestInstallWithCA1, self).test_replica2_with_ca_kra_install()
 
+    @pytest.mark.xfail
     @pytest.mark.skipif(config.domain_level == DOMAIN_LEVEL_0,
                         reason='does not work on DOMAIN_LEVEL_0 by design')
     def test_replica2_ipa_dns_install(self):
         super(TestInstallWithCA1, self).test_replica2_ipa_dns_install()
 
 
-@pytest.mark.xfail(reason="FreeIPA ticket 7008")
 class TestInstallWithCA2(InstallTestBase2):
 
     @classmethod
     def install(cls, mh):
         tasks.install_master(cls.master, setup_dns=False)
-
-    @pytest.mark.skipif(config.domain_level == DOMAIN_LEVEL_0,
-                        reason='does not work on DOMAIN_LEVEL_0 by design')
-    def test_replica0_with_ca_kra_dns_install(self):
-        super(TestInstallWithCA2, self).test_replica0_with_ca_kra_dns_install()
 
     @pytest.mark.skipif(config.domain_level == DOMAIN_LEVEL_0,
                         reason='does not work on DOMAIN_LEVEL_0 by design')
@@ -161,6 +193,7 @@ class TestInstallWithCA2(InstallTestBase2):
         super(TestInstallWithCA2, self).test_replica2_ipa_kra_install()
 
 
+@pytest.mark.xfail
 class TestInstallWithCA_KRA1(InstallTestBase1):
 
     @classmethod
@@ -178,7 +211,6 @@ class TestInstallWithCA_KRA2(InstallTestBase2):
         tasks.install_master(cls.master, setup_dns=False, setup_kra=True)
 
 
-@pytest.mark.xfail(reason="FreeIPA ticket 7008")
 class TestInstallWithCA_DNS1(InstallTestBase1):
 
     @classmethod
@@ -190,30 +222,24 @@ class TestInstallWithCA_DNS1(InstallTestBase1):
     def test_replica1_ipa_kra_install(self):
         super(TestInstallWithCA_DNS1, self).test_replica1_ipa_kra_install()
 
+    @pytest.mark.xfail
     @pytest.mark.skipif(config.domain_level == DOMAIN_LEVEL_0,
                         reason='does not work on DOMAIN_LEVEL_0 by design')
     def test_replica2_with_ca_kra_install(self):
         super(TestInstallWithCA_DNS1, self).test_replica2_with_ca_kra_install()
 
+    @pytest.mark.xfail
     @pytest.mark.skipif(config.domain_level == DOMAIN_LEVEL_0,
                         reason='does not work on DOMAIN_LEVEL_0 by design')
     def test_replica2_ipa_dns_install(self):
         super(TestInstallWithCA_DNS1, self).test_replica2_ipa_dns_install()
 
 
-@pytest.mark.xfail(reason="FreeIPA ticket 7008")
 class TestInstallWithCA_DNS2(InstallTestBase2):
 
     @classmethod
     def install(cls, mh):
         tasks.install_master(cls.master, setup_dns=True)
-
-    @pytest.mark.skipif(config.domain_level == DOMAIN_LEVEL_0,
-                        reason='does not work on DOMAIN_LEVEL_0 by design')
-    def test_replica0_with_ca_kra_dns_install(self):
-        super(
-            TestInstallWithCA_DNS2, self
-        ).test_replica0_with_ca_kra_dns_install()
 
     @pytest.mark.skipif(config.domain_level == DOMAIN_LEVEL_0,
                         reason='does not work on DOMAIN_LEVEL_0 by design')
@@ -226,7 +252,65 @@ class TestInstallWithCA_DNS2(InstallTestBase2):
         super(TestInstallWithCA_DNS2, self).test_replica2_ipa_kra_install()
 
 
+class TestInstallWithCA_DNS3(CALessBase):
+    """
+    Test an install with a bad DNS resolver configured to force a
+    timeout trying to verify the existing zones. In the case of a reverse
+    zone it is skipped unless --allow-zone-overlap is set regardless of
+    the value of --auto-reverse. Confirm that --allow-zone-overlap
+    lets the reverse zone be created.
+
+    ticket 7239
+    """
+
+    @server_install_setup
+    def test_number_of_zones(self):
+        """There should be two zones: one forward, one reverse"""
+
+        self.create_pkcs12('ca1/server')
+        self.prepare_cacert('ca1')
+
+        self.install_server(extra_args=['--allow-zone-overlap'])
+
+        result = self.master.run_command([
+            'ipa', 'dnszone-find'])
+
+        assert "in-addr.arpa." in result.stdout_text
+
+        assert "returned 2" in result.stdout_text
+
+
+class TestInstallWithCA_DNS4(CALessBase):
+    """
+    Test an install with a bad DNS resolver configured to force a
+    timeout trying to verify the existing zones. In the case of a reverse
+    zone it is skipped unless --allow-zone-overlap is set regardless of
+    the value of --auto-reverse. Confirm that without --allow-reverse-zone
+    only the forward zone is created.
+
+    ticket 7239
+    """
+
+    @server_install_setup
+    def test_number_of_zones(self):
+        """There should be one zone, a forward because rev timed-out"""
+
+        self.create_pkcs12('ca1/server')
+        self.prepare_cacert('ca1')
+
+        # no zone overlap by default
+        self.install_server()
+
+        result = self.master.run_command([
+            'ipa', 'dnszone-find'])
+
+        assert "in-addr.arpa." not in result.stdout_text
+
+        assert "returned 1" in result.stdout_text
+
+
 @pytest.mark.cs_acceptance
+@pytest.mark.xfail
 class TestInstallWithCA_KRA_DNS1(InstallTestBase1):
 
     @classmethod
@@ -269,6 +353,16 @@ class TestADTrustInstallWithDNS_KRA_ADTrust(ADTrustInstallTestBase):
         self.install_replica(self.replicas[1], setup_ca=True, setup_kra=True)
 
 
+def get_pki_tomcatd_pid(host):
+    pid = ''
+    cmd = host.run_command(['systemctl', 'status', 'pki-tomcatd@pki-tomcat'])
+    for line in cmd.stdout_text.split('\n'):
+        if "Main PID" in line:
+            pid = line.split()[2]
+            break
+    return(pid)
+
+
 ##
 # Rest of master installation tests
 ##
@@ -289,6 +383,34 @@ class TestInstallMaster(IntegrationTest):
 
     def test_install_dns(self):
         tasks.install_dns(self.master)
+
+    def test_ipactl_restart_pki_tomcat(self):
+        """ Test if ipactl restart restarts the pki-tomcatd
+
+        Wrong logic was triggering the start instead of restart
+        for pki-tomcatd. This test validates that restart
+        called on pki-tomcat properly.
+
+        related ticket : https://pagure.io/freeipa/issue/7927
+        """
+        # get process id of pki-tomcatd
+        pki_pid = get_pki_tomcatd_pid(self.master)
+
+        # check if pki-tomcad restarted
+        cmd = self.master.run_command(['ipactl', 'restart'])
+        assert "Restarting pki-tomcatd Service" in cmd.stdout_text
+
+        # check if pid for pki-tomcad changed
+        pki_pid_after_restart = get_pki_tomcatd_pid(self.master)
+        assert pki_pid != pki_pid_after_restart
+
+        # check if pki-tomcad restarted
+        cmd = self.master.run_command(['ipactl', 'restart'])
+        assert "Restarting pki-tomcatd Service" in cmd.stdout_text
+
+        # check if pid for pki-tomcad changed
+        pki_pid_after_restart_2 = get_pki_tomcatd_pid(self.master)
+        assert pki_pid_after_restart != pki_pid_after_restart_2
 
     def test_WSGI_worker_process(self):
         """ Test if WSGI worker process count is set to 4
@@ -322,6 +444,58 @@ class TestInstallMaster(IntegrationTest):
         assert cmd.returncode != 0
         exp_str = ("ipa: ERROR: No YubiKey found")
         assert exp_str in cmd.stderr_text
+
+    def test_file_permissions(self):
+        args = [
+            "rpm", "-V",
+            "python3-ipaclient",
+            "python3-ipalib",
+            "python3-ipaserver",
+            "python2-ipaclient",
+            "python2-ipalib",
+            "python2-ipaserver"
+        ]
+
+        if ipaplatform.NAME == 'fedora':
+            args.extend([
+                "freeipa-client",
+                "freeipa-client-common",
+                "freeipa-common",
+                "freeipa-server",
+                "freeipa-server-common",
+                "freeipa-server-dns",
+                "freeipa-server-trust-ad"
+            ])
+        else:
+            args.extend([
+                "ipa-client",
+                "ipa-client-common",
+                "ipa-common",
+                "ipa-server",
+                "ipa-server-common",
+                "ipa-server-dns"
+            ])
+
+        result = self.master.run_command(args, raiseonerr=False)
+        if result.returncode != 0:
+            # Check the mode errors
+            mode_warnings = re.findall(
+                r"^.M.......  [cdglr ]+ (?P<filename>.*)$",
+                result.stdout_text, re.MULTILINE)
+            msg = "rpm -V found mode issues for the following files: {}"
+            assert mode_warnings == [], msg.format(mode_warnings)
+            # Check the owner errors
+            user_warnings = re.findall(
+                r"^.....U...  [cdglr ]+ (?P<filename>.*)$",
+                result.stdout_text, re.MULTILINE)
+            msg = "rpm -V found ownership issues for the following files: {}"
+            assert user_warnings == [], msg.format(user_warnings)
+            # Check the group errors
+            group_warnings = re.findall(
+                r"^......G..  [cdglr ]+ (?P<filename>.*)$",
+                result.stdout_text, re.MULTILINE)
+            msg = "rpm -V found group issues for the following files: {}"
+            assert group_warnings == [], msg.format(group_warnings)
 
 
 class TestInstallMasterKRA(IntegrationTest):
@@ -398,3 +572,49 @@ class TestInstallMasterReservedIPasForwarder(IntegrationTest):
         exp_str = ("Invalid IP Address 0.0.0.0: cannot use IANA reserved "
                    "IP address 0.0.0.0")
         assert exp_str in cmd.stdout_text
+
+
+class TestMaskInstall(IntegrationTest):
+    """ Test master and replica installation with wrong mask
+
+    This test checks that master/replica installation fails (expectedly) if
+    mask > 022.
+
+    related ticket: https://pagure.io/freeipa/issue/7193
+    """
+
+    num_replicas = 0
+
+    @classmethod
+    def install(cls, mh):
+        super(TestMaskInstall, cls).install(mh)
+        cls.bashrc_file = cls.master.get_file_contents('/root/.bashrc')
+
+    def test_install_master(self):
+        self.master.run_command('echo "umask 0027" >> /root/.bashrc')
+        result = self.master.run_command(['umask'])
+        assert '0027' in result.stdout_text
+
+        cmd = tasks.install_master(
+            self.master, setup_dns=False, raiseonerr=False
+        )
+        exp_str = ("Unexpected system mask")
+        assert (exp_str in cmd.stderr_text and cmd.returncode != 0)
+
+    def test_install_replica(self):
+        result = self.master.run_command(['umask'])
+        assert '0027' in result.stdout_text
+
+        cmd = self.master.run_command([
+            'ipa-replica-install', '-w', self.master.config.admin_password,
+            '-n', self.master.domain.name, '-r', self.master.domain.realm,
+            '--server', 'dummy_master.%s' % self.master.domain.name,
+            '-U'], raiseonerr=False
+        )
+        exp_str = ("Unexpected system mask")
+        assert (exp_str in cmd.stderr_text and cmd.returncode != 0)
+
+    def test_files_ownership_and_permission_teardown(self):
+        """ Method to restore the default bashrc contents"""
+        if self.bashrc_file is not None:
+            self.master.put_file_contents('/root/.bashrc', self.bashrc_file)

@@ -15,8 +15,16 @@ from ipatests.pytest_ipa.integration.tasks import (
     assert_error, replicas_cleanup)
 from ipatests.pytest_ipa.integration.env_config import get_global_config
 from ipalib.constants import (
-    DOMAIN_LEVEL_0, DOMAIN_LEVEL_1, DOMAIN_SUFFIX_NAME, IPA_CA_NICKNAME)
+    DOMAIN_LEVEL_0, DOMAIN_LEVEL_1, DOMAIN_SUFFIX_NAME, IPA_CA_NICKNAME,
+    CA_SUFFIX_NAME)
 from ipaplatform.paths import paths
+from ipatests.test_integration.test_backup_and_restore import backup
+from ipatests.test_integration.test_dns_locations import (
+    resolve_records_from_server, IPA_DEFAULT_MASTER_SRV_REC
+)
+from ipapython.dnsutil import DNSName
+from ipalib.constants import IPA_CA_RECORD
+
 
 config = get_global_config()
 
@@ -795,3 +803,209 @@ class TestReplicaInForwardZone(IntegrationTest):
             # Restore /etc/hosts on master and replica
             restore_etc_hosts(master)
             restore_etc_hosts(replica)
+
+
+class TestHiddenReplicaPromotion(IntegrationTest):
+    """Test hidden replica features
+    """
+    topology = None
+    num_replicas = 2
+
+    @classmethod
+    def install(cls, mh):
+        # master with DNSSEC master
+        tasks.install_master(cls.master, setup_dns=True, setup_kra=True)
+        cls.master.run_command([
+            "ipa-dns-install",
+            "--dnssec-master",
+            "--forwarder", cls.master.config.dns_forwarder,
+            "-U",
+        ])
+        # hidden replica with CA and DNS
+        tasks.install_replica(
+            cls.master, cls.replicas[0],
+            setup_dns=True, setup_kra=False,
+            extra_args=('--hidden-replica',)
+        )
+        # manually install KRA to verify that hidden state is synced
+        tasks.install_kra(cls.replicas[0])
+
+    def _check_dnsrecords(self, hosts_expected, hosts_unexpected=()):
+        domain = DNSName(self.master.domain.name).make_absolute()
+        rset = [
+            (rname, 'SRV')
+            for rname, _port in IPA_DEFAULT_MASTER_SRV_REC
+        ]
+        rset.append((DNSName(IPA_CA_RECORD), 'A'))
+
+        for rname, rtype in rset:
+            name_abs = rname.derelativize(domain)
+            query = resolve_records_from_server(
+                name_abs, rtype, self.master.ip
+            )
+            txt = query.to_text()
+            for host in hosts_expected:
+                value = host.hostname if rtype == 'SRV' else host.ip
+                assert value in txt
+            for host in hosts_unexpected:
+                value = host.hostname if rtype == 'SRV' else host.ip
+                assert value not in txt
+
+    def _check_server_role(self, host, status, kra=True, dns=True):
+        roles = [u'IPA master', u'CA server']
+        if kra:
+            roles.append(u'KRA server')
+        if dns:
+            roles.append(u'DNS server')
+        for role in roles:
+            result = self.replicas[0].run_command([
+                'ipa', 'server-role-find',
+                '--server', host.hostname,
+                '--role', role
+            ])
+            expected = 'Role status: {}'.format(status)
+            assert expected in result.stdout_text
+
+    def _check_config(self, enabled=(), hidden=()):
+        enabled = {host.hostname for host in enabled}
+        hidden = {host.hostname for host in hidden}
+        services = [
+            'IPA masters', 'IPA CA servers', 'IPA KRA servers',
+            'IPA DNS servers'
+        ]
+
+        result = self.replicas[0].run_command(['ipa', 'config-show'])
+        values = {}
+        for line in result.stdout_text.split('\n'):
+            if ':' not in line:
+                continue
+            k, v = line.split(':', 1)
+            values[k.strip()] = {item.strip() for item in v.split(',')}
+
+        for service in services:
+            hservice = 'Hidden {}'.format(service)
+            assert values.get(service, set()) == enabled
+            assert values.get(hservice, set()) == hidden
+
+    def test_hidden_replica_install(self):
+        # TODO: check that all services are running on hidden replica
+        self._check_server_role(self.master, 'enabled')
+        self._check_server_role(self.replicas[0], 'hidden')
+        self._check_dnsrecords([self.master], [self.replicas[0]])
+        self._check_config([self.master], [self.replicas[0]])
+
+    def test_hide_master_fails(self):
+        # verify state
+        self._check_config([self.master], [self.replicas[0]])
+        # nothing to do
+        result = self.master.run_command([
+            'ipa', 'server-state',
+            self.master.hostname, '--state=enabled'
+        ], raiseonerr=False)
+        assert result.returncode == 1
+        assert "no modifications to be performed" in result.stderr_text
+        # hiding the last master fails
+        result = self.master.run_command([
+            'ipa', 'server-state',
+            self.master.hostname, '--state=hidden'
+        ], raiseonerr=False)
+        assert result.returncode == 1
+        keys = [
+            "CA renewal master", "DNSSec key master", "CA server",
+            "KRA server", "DNS server", "IPA server"
+        ]
+        for key in keys:
+            assert key in result.stderr_text
+
+    def test_hidden_replica_promote(self):
+        self.replicas[0].run_command([
+            'ipa', 'server-state',
+            self.replicas[0].hostname, '--state=enabled'
+        ])
+        self._check_server_role(self.replicas[0], 'enabled')
+        self._check_dnsrecords([self.master, self.replicas[0]])
+        self._check_config([self.master, self.replicas[0]])
+
+        result = self.replicas[0].run_command([
+            'ipa', 'server-state',
+            self.replicas[0].hostname, '--state=enabled'
+        ], raiseonerr=False)
+        assert result.returncode == 1
+        assert 'no modifications to be performed' in result.stderr_text
+
+    def test_hidden_replica_demote(self):
+        self.replicas[0].run_command([
+            'ipa', 'server-state',
+            self.replicas[0].hostname, '--state=hidden'
+        ])
+        self._check_server_role(self.replicas[0], 'hidden')
+        self._check_dnsrecords([self.master], [self.replicas[0]])
+
+    def test_replica_from_hidden(self):
+        # install a replica from a hidden replica
+        self._check_server_role(self.replicas[0], 'hidden')
+        tasks.install_replica(
+            master=self.replicas[0],
+            replica=self.replicas[1],
+            setup_dns=True
+        )
+        self._check_server_role(self.replicas[0], 'hidden')
+        self._check_server_role(
+            self.replicas[1], 'enabled', kra=False, dns=False
+        )
+        self._check_dnsrecords(
+            [self.master, self.replicas[1]], [self.replicas[0]]
+        )
+        # hide the new replica
+        self.replicas[0].run_command([
+            'ipa', 'server-state',
+            self.replicas[1].hostname, '--state=hidden'
+        ])
+        # and establish replication agreements from master
+        tasks.connect_replica(
+            master=self.master,
+            replica=self.replicas[1],
+        )
+        tasks.connect_replica(
+            master=self.master,
+            replica=self.replicas[1],
+            database=CA_SUFFIX_NAME,
+        )
+        # remove replication agreements again
+        tasks.disconnect_replica(
+            master=self.master,
+            replica=self.replicas[1],
+        )
+        tasks.disconnect_replica(
+            master=self.master,
+            replica=self.replicas[1],
+            database=CA_SUFFIX_NAME,
+        )
+        # and uninstall
+        tasks.uninstall_replica(
+            master=self.replicas[0],
+            replica=self.replicas[1],
+        )
+
+    def test_hidden_replica_backup_and_restore(self):
+        """Exercises backup+restore and hidden replica uninstall
+        """
+        self._check_server_role(self.replicas[0], 'hidden')
+        # backup
+        backup_path = backup(self.replicas[0])
+        # uninstall
+        tasks.uninstall_master(self.replicas[0])
+        # restore
+        dirman_password = self.master.config.dirman_password
+        self.replicas[0].run_command(
+            ['ipa-restore', backup_path],
+            stdin_text=dirman_password + '\nyes'
+        )
+
+        # give replication some time
+        time.sleep(5)
+        tasks.kinit_admin(self.replicas[0])
+
+        # FIXME: restore turns hidden replica into enabled replica
+        self._check_config([self.master, self.replicas[0]])
+        self._check_server_role(self.replicas[0], 'enabled')

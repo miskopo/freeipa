@@ -40,6 +40,7 @@ from ipaserver.dns_data_management import (
 from ipaserver.install import installutils
 from ipaserver.install import service
 from ipaserver.install import sysupgrade
+from ipaserver.masters import get_masters
 from ipapython import ipautil
 from ipapython import dnsutil
 from ipapython.dnsutil import DNSName
@@ -303,7 +304,7 @@ def read_reverse_zone(default, ip_address, allow_zone_overlap=False):
     return normalize_zone(zone)
 
 
-def get_auto_reverse_zones(ip_addresses):
+def get_auto_reverse_zones(ip_addresses, allow_zone_overlap=False):
     auto_zones = []
     for ip in ip_addresses:
         if ipautil.reverse_record_exists(ip):
@@ -311,12 +312,13 @@ def get_auto_reverse_zones(ip_addresses):
             logger.info("Reverse record for IP address %s already exists", ip)
             continue
         default_reverse = get_reverse_zone_default(ip)
-        try:
-            dnsutil.check_zone_overlap(default_reverse)
-        except ValueError:
-            logger.info("Reverse zone %s for IP address %s already exists",
-                        default_reverse, ip)
-            continue
+        if not allow_zone_overlap:
+            try:
+                dnsutil.check_zone_overlap(default_reverse)
+            except ValueError:
+                logger.info("Reverse zone %s for IP address %s already exists",
+                            default_reverse, ip)
+                continue
         auto_zones.append((ip, default_reverse))
     return auto_zones
 
@@ -487,7 +489,8 @@ def check_reverse_zones(ip_addresses, reverse_zones, options, unattended,
             ips_missing_reverse.append(ip)
 
     # create reverse zone for IP addresses that does not have one
-    for (ip, rz) in get_auto_reverse_zones(ips_missing_reverse):
+    for (ip, rz) in get_auto_reverse_zones(ips_missing_reverse,
+                                           options.allow_zone_overlap):
         if options.auto_reverse:
             logger.info("Reverse zone %s will be created", rz)
             checked_reverse_zones.append(rz)
@@ -862,8 +865,7 @@ class BindInstance(service.Service):
 
     def __add_others(self):
         entries = api.Backend.ldap2.get_entries(
-            DN(('cn', 'masters'), ('cn', 'ipa'), ('cn', 'etc'),
-               self.suffix),
+            DN(api.env.container_masters, self.suffix),
             api.Backend.ldap2.SCOPE_ONELEVEL, None, ['dn'])
 
         for entry in entries:
@@ -1038,13 +1040,8 @@ class BindInstance(service.Service):
             cname_fqdn[cname] = fqdn
 
         # get FQDNs of all IPA masters
-        ldap = self.api.Backend.ldap2
         try:
-            entries = ldap.get_entries(
-                DN(('cn', 'masters'), ('cn', 'ipa'), ('cn', 'etc'),
-                   self.api.env.basedn),
-                ldap.SCOPE_ONELEVEL, None, ['cn'])
-            masters = set(e['cn'][0] for e in entries)
+            masters = set(get_masters(self.api.Backend.ldap2))
         except errors.NotFound:
             masters = set()
 

@@ -21,7 +21,7 @@
 ########################################################
 define(IPA_VERSION_MAJOR, 4)
 define(IPA_VERSION_MINOR, 6)
-define(IPA_VERSION_RELEASE, 4)
+define(IPA_VERSION_RELEASE, 5)
 
 ########################################################
 # For 'pre' releases the version will be               #
@@ -82,8 +82,8 @@ define(IPA_DATA_VERSION, 20100614120000)
 #                                                      #
 ########################################################
 define(IPA_API_VERSION_MAJOR, 2)
-define(IPA_API_VERSION_MINOR, 230)
-# Last change: Added `automember-find-orphans' command
+define(IPA_API_VERSION_MINOR, 231)
+# Last change: Added admin creds to trust-fetch-domains
 
 
 ########################################################

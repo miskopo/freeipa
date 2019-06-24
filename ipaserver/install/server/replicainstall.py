@@ -42,9 +42,11 @@ from ipaserver.install import (
     installutils, kra, krbinstance,
     ntpinstance, otpdinstance, custodiainstance, service)
 from ipaserver.install.installutils import (
-    create_replica_config, ReplicaConfig, load_pkcs12, is_ipa_configured)
+    create_replica_config, ReplicaConfig, load_pkcs12, is_ipa_configured,
+    validate_mask)
 from ipaserver.install.replication import (
     ReplicationManager, replica_conn_check)
+from ipaserver.masters import find_providing_servers, find_providing_server
 import SSSDConfig
 from subprocess import CalledProcessError
 
@@ -575,6 +577,11 @@ def common_check(no_ntp):
     tasks.check_ipv6_stack_enabled()
     tasks.check_selinux_status()
 
+    mask_str = validate_mask()
+    if mask_str:
+        raise ScriptError(
+            "Unexpected system mask: %s, expected 0022" % mask_str)
+
     if is_ipa_configured():
         raise ScriptError(
             "IPA server is already configured on this system.\n"
@@ -1041,13 +1048,19 @@ def promote_check(installer):
     config.host_name = api.env.host
     config.domain_name = api.env.domain
     config.master_host_name = api.env.server
-    config.ca_host_name = api.env.ca_host
+    if not api.env.ca_host or api.env.ca_host == api.env.host:
+        # ca_host has not been configured explicitly, prefer source master
+        config.ca_host_name = api.env.server
+    else:
+        # default to ca_host from IPA config
+        config.ca_host_name = api.env.ca_host
     config.kra_host_name = config.ca_host_name
     config.ca_ds_port = 389
     config.setup_ca = options.setup_ca
     config.setup_kra = options.setup_kra
     config.dir = installer._top_dir
     config.basedn = api.env.basedn
+    config.hidden_replica = options.hidden_replica
 
     http_pkcs12_file = None
     http_pkcs12_info = None
@@ -1251,9 +1264,10 @@ def promote_check(installer):
         if subject_base is not None:
             config.subject_base = DN(subject_base)
 
-        # Find if any server has a CA
-        ca_host = service.find_providing_server(
-                'CA', conn, config.ca_host_name)
+        # Find any server with a CA
+        ca_host = find_providing_server(
+            'CA', conn, [config.ca_host_name]
+        )
         if ca_host is not None:
             config.ca_host_name = ca_host
             ca_enabled = True
@@ -1274,14 +1288,16 @@ def promote_check(installer):
                              "custom certificates.")
                 raise ScriptError(rval=3)
 
-        kra_host = service.find_providing_server(
-                'KRA', conn, config.kra_host_name)
+        # Find any server with a KRA
+        kra_host = find_providing_server(
+            'KRA', conn, [config.kra_host_name]
+        )
         if kra_host is not None:
             config.kra_host_name = kra_host
             kra_enabled = True
         else:
             if options.setup_kra:
-                logger.error("There is no KRA server in the domain, "
+                logger.error("There is no active KRA server in the domain, "
                              "can't setup a KRA clone")
                 raise ScriptError(rval=3)
             kra_enabled = False
@@ -1569,9 +1585,17 @@ def install(installer):
         remove_replica_info_dir(installer)
 
     # Enable configured services and update DNS SRV records
-    service.enable_services(config.host_name)
+    if options.hidden_replica:
+        # Set services to hidden
+        service.hide_services(config.host_name)
+    else:
+        # Enable configured services
+        service.enable_services(config.host_name)
+    # update DNS SRV records. Although it's only really necessary in
+    # enabled-service case, also perform update in hidden replica case.
     api.Command.dns_update_system_records()
-    ca_servers = service.find_providing_servers('CA', api.Backend.ldap2, api)
+
+    ca_servers = find_providing_servers('CA', api.Backend.ldap2, api=api)
     api.Backend.ldap2.disconnect()
 
     # Everything installed properly, activate ipa service.

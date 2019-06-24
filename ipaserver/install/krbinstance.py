@@ -346,7 +346,7 @@ class KrbInstance(service.Service):
         MIN_KRB5KDC_WITH_WORKERS = "1.9"
         cpus = os.sysconf('SC_NPROCESSORS_ONLN')
         workers = False
-        result = ipautil.run(['klist', '-V'],
+        result = ipautil.run([paths.KLIST, '-V'],
                              raiseonerr=False, capture_output=True)
         if result.returncode == 0:
             verstr = result.output.split()[-1]
@@ -470,11 +470,7 @@ class KrbInstance(service.Service):
         unadvertise enabled PKINIT feature in master's KDC entry in LDAP
         """
         ldap = api.Backend.ldap2
-        dn = DN(('cn', 'KDC'),
-                ('cn', self.fqdn),
-                ('cn', 'masters'),
-                ('cn', 'ipa'),
-                ('cn', 'etc'),
+        dn = DN(('cn', 'KDC'), ('cn', self.fqdn), api.env.container_masters,
                 self.suffix)
 
         entry = ldap.get_entry(dn, ['ipaConfigString'])

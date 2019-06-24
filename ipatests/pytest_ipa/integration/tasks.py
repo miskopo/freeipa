@@ -32,7 +32,7 @@ import time
 
 import dns
 from ldif import LDIFWriter
-from SSSDConfig import SSSDConfig
+
 from six import StringIO
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -501,15 +501,94 @@ def install_adtrust(host):
     run_repeatedly(host, dig_command, test=dig_test)
 
 
+def disable_dnssec_validation(host):
+    backup_file(host, paths.NAMED_CONF)
+    named_conf = host.get_file_contents(paths.NAMED_CONF)
+    named_conf = re.sub(br'dnssec-validation\s*yes;', b'dnssec-validation no;',
+                        named_conf)
+    host.put_file_contents(paths.NAMED_CONF, named_conf)
+    restart_named(host)
+
+
+def restore_dnssec_validation(host):
+    restore_files(host)
+    restart_named(host)
+
+
+def is_subdomain(subdomain, domain):
+    subdomain_unpacked = subdomain.split('.')
+    domain_unpacked = domain.split('.')
+
+    subdomain_unpacked.reverse()
+    domain_unpacked.reverse()
+
+    subdomain = False
+
+    if len(subdomain_unpacked) > len(domain_unpacked):
+        subdomain = True
+
+        for subdomain_segment, domain_segment in zip(subdomain_unpacked,
+                                                     domain_unpacked):
+            subdomain = subdomain and subdomain_segment == domain_segment
+
+    return subdomain
+
 def configure_dns_for_trust(master, ad):
     """
-    This method is intentionally left empty. Originally it served for DNS
-    configuration on IPA master according to the relationship of the IPA's
-    and AD's domains.
+    This configures DNS on IPA master according to the relationship of the
+    IPA's and AD's domains.
     """
 
+    kinit_admin(master)
 
-def establish_trust_with_ad(master, ad_domain, extra_args=()):
+    if is_subdomain(ad.domain.name, master.domain.name):
+        master.run_command(['ipa', 'dnsrecord-add', master.domain.name,
+                            '%s.%s' % (ad.shortname, ad.netbios),
+                            '--a-ip-address', ad.ip])
+
+        master.run_command(['ipa', 'dnsrecord-add', master.domain.name,
+                            ad.netbios,
+                            '--ns-hostname',
+                            '%s.%s' % (ad.shortname, ad.netbios)])
+
+        master.run_command(['ipa', 'dnszone-mod', master.domain.name,
+                            '--allow-transfer', ad.ip])
+    else:
+        disable_dnssec_validation(master)
+        master.run_command(['ipa', 'dnsforwardzone-add', ad.domain.name,
+                            '--forwarder', ad.ip,
+                            '--forward-policy', 'only',
+                            ])
+
+
+def unconfigure_dns_for_trust(master, ad):
+    """
+    This undoes changes made by configure_dns_for_trust
+    """
+    kinit_admin(master)
+    if is_subdomain(ad.domain.name, master.domain.name):
+        master.run_command(['ipa', 'dnsrecord-del', master.domain.name,
+                            '%s.%s' % (ad.shortname, ad.netbios),
+                            '--a-rec', ad.ip])
+        master.run_command(['ipa', 'dnsrecord-del', master.domain.name,
+                            ad.netbios,
+                            '--ns-rec', '%s.%s' % (ad.shortname, ad.netbios)])
+    else:
+        master.run_command(['ipa', 'dnsforwardzone-del', ad.domain.name])
+        restore_dnssec_validation(master)
+
+
+def configure_windows_dns_for_trust(ad, master):
+    ad.run_command(['dnscmd', '/zoneadd', master.domain.name,
+                    '/Forwarder', master.ip])
+
+
+def unconfigure_windows_dns_for_trust(ad, master):
+    ad.run_command(['dnscmd', '/zonedelete', master.domain.name, '/f'])
+
+
+def establish_trust_with_ad(master, ad_domain, extra_args=(),
+                            shared_secret=None):
     """
     Establishes trust with Active Directory. Trust type is detected depending
     on the presence of SfU (Services for Unix) support on the AD.
@@ -519,6 +598,7 @@ def establish_trust_with_ad(master, ad_domain, extra_args=()):
     """
 
     # Force KDC to reload MS-PAC info by trying to get TGT for HTTP
+    extra_args = list(extra_args)
     master.run_command(['kinit', '-kt', paths.HTTP_KEYTAB,
                         'HTTP/%s' % master.hostname])
     master.run_command(['systemctl', 'restart', 'krb5kdc.service'])
@@ -528,12 +608,15 @@ def establish_trust_with_ad(master, ad_domain, extra_args=()):
     master.run_command(['klist'])
     master.run_command(['smbcontrol', 'all', 'debug', '100'])
 
-    run_repeatedly(master,
-                   ['ipa', 'trust-add',
-                    '--type', 'ad', ad_domain,
-                    '--admin', 'Administrator',
-                    '--password'] + list(extra_args),
-                   stdin_text=master.config.ad_admin_password)
+    if shared_secret:
+        extra_args += ['--trust-secret']
+        stdin_text = shared_secret
+    else:
+        extra_args += ['--admin', 'Administrator', '--password']
+        stdin_text = master.config.ad_admin_password
+    run_repeatedly(
+        master, ['ipa', 'trust-add', '--type', 'ad', ad_domain] + extra_args,
+        stdin_text=stdin_text)
     master.run_command(['smbcontrol', 'all', 'debug', '1'])
     clear_sssd_cache(master)
     master.run_command(['systemctl', 'restart', 'krb5kdc.service'])
@@ -626,6 +709,7 @@ def modify_sssd_conf(host, domain, mod_dict, provider='ipa',
     :param provider_subtype: backend subtype (e.g. id or sudo), will be added
         to the domain config if not present
     """
+    from SSSDConfig import SSSDConfig
     fd, temp_config_file = tempfile.mkstemp()
     os.close(fd)
     try:
@@ -691,28 +775,38 @@ def sync_time(host, server):
     host.run_command(['ntpdate', server.hostname])
 
 
-def connect_replica(master, replica, domain_level=None):
+def connect_replica(master, replica, domain_level=None,
+                    database=DOMAIN_SUFFIX_NAME):
     if domain_level is None:
         domain_level = master.config.domain_level
     if domain_level == DOMAIN_LEVEL_0:
-        replica.run_command(['ipa-replica-manage', 'connect', master.hostname])
+        if database == DOMAIN_SUFFIX_NAME:
+            cmd = 'ipa-replica-manage'
+        else:
+            cmd = 'ipa-csreplica-manage'
+        replica.run_command([cmd, 'connect', master.hostname])
     else:
         kinit_admin(master)
-        master.run_command(["ipa", "topologysegment-add", DOMAIN_SUFFIX_NAME,
+        master.run_command(["ipa", "topologysegment-add", database,
                             "%s-to-%s" % (master.hostname, replica.hostname),
                             "--leftnode=%s" % master.hostname,
                             "--rightnode=%s" % replica.hostname
                             ])
 
 
-def disconnect_replica(master, replica, domain_level=None):
+def disconnect_replica(master, replica, domain_level=None,
+                       database=DOMAIN_SUFFIX_NAME):
     if domain_level is None:
         domain_level = master.config.domain_level
     if domain_level == DOMAIN_LEVEL_0:
-        replica.run_command(['ipa-replica-manage', 'disconnect', master.hostname])
+        if database == DOMAIN_SUFFIX_NAME:
+            cmd = 'ipa-replica-manage'
+        else:
+            cmd = 'ipa-csreplica-manage'
+        replica.run_command([cmd, 'disconnect', master.hostname])
     else:
         kinit_admin(master)
-        master.run_command(["ipa", "topologysegment-del", DOMAIN_SUFFIX_NAME,
+        master.run_command(["ipa", "topologysegment-del", database,
                             "%s-to-%s" % (master.hostname, replica.hostname),
                             "--continue"
                             ])
@@ -724,19 +818,21 @@ def kinit_admin(host, raiseonerr=True):
 
 
 def uninstall_master(host, ignore_topology_disconnect=True,
-                     ignore_last_of_role=True, clean=True, verbose=False):
+                     ignore_last_of_role=True, clean=True, verbose=False,
+                     domain_level=None):
     host.collect_log(paths.IPASERVER_UNINSTALL_LOG)
     uninstall_cmd = ['ipa-server-install', '--uninstall', '-U']
 
-    host_domain_level = domainlevel(host)
+    if domain_level is None:
+        domain_level = domainlevel(host)
 
-    if ignore_topology_disconnect and host_domain_level != DOMAIN_LEVEL_0:
+    if ignore_topology_disconnect and domain_level != DOMAIN_LEVEL_0:
         uninstall_cmd.append('--ignore-topology-disconnect')
 
-    if ignore_last_of_role and host_domain_level != DOMAIN_LEVEL_0:
+    if ignore_last_of_role and domain_level != DOMAIN_LEVEL_0:
         uninstall_cmd.append('--ignore-last-of-role')
 
-    if verbose and host_domain_level != DOMAIN_LEVEL_0:
+    if verbose and domain_level != DOMAIN_LEVEL_0:
         uninstall_cmd.append('-v')
 
     result = host.run_command(uninstall_cmd)
@@ -1430,7 +1526,7 @@ def ldappasswd_user_change(user, oldpw, newpw, master):
     basedn = master.domain.basedn
 
     userdn = "uid={},{},{}".format(user, container_user, basedn)
-    master_ldap_uri = "ldap://{}".format(master.external_hostname)
+    master_ldap_uri = "ldap://{}".format(master.hostname)
 
     args = [paths.LDAPPASSWD, '-D', userdn, '-w', oldpw, '-a', oldpw,
             '-s', newpw, '-x', '-H', master_ldap_uri]
@@ -1442,7 +1538,7 @@ def ldappasswd_sysaccount_change(user, oldpw, newpw, master):
     basedn = master.domain.basedn
 
     userdn = "uid={},{},{}".format(user, container_sysaccounts, basedn)
-    master_ldap_uri = "ldap://{}".format(master.external_hostname)
+    master_ldap_uri = "ldap://{}".format(master.hostname)
 
     args = [paths.LDAPPASSWD, '-D', userdn, '-w', oldpw, '-a', oldpw,
             '-s', newpw, '-x', '-ZZ', '-H', master_ldap_uri]

@@ -250,6 +250,18 @@ class config(LDAPObject):
             flags={'virtual_attribute', 'no_create', 'no_update'}
         ),
         Str(
+            'ipa_master_hidden_server*',
+            label=_('Hidden IPA masters'),
+            doc=_('List of all hidden IPA masters'),
+            flags={'virtual_attribute', 'no_create', 'no_update'}
+        ),
+        Str(
+            'pkinit_server_server*',
+            label=_('IPA master capable of PKINIT'),
+            doc=_('IPA master which can process PKINIT requests'),
+            flags={'virtual_attribute', 'no_create', 'no_update'}
+        ),
+        Str(
             'ca_server_server*',
             label=_('IPA CA servers'),
             doc=_('IPA servers configured as certificate authority'),
@@ -262,15 +274,27 @@ class config(LDAPObject):
             flags={'virtual_attribute', 'no_create', 'no_update'}
         ),
         Str(
+            'ca_server_hidden_server*',
+            label=_('Hidden IPA CA servers'),
+            doc=_('Hidden IPA servers configured as certificate authority'),
+            flags={'virtual_attribute', 'no_create', 'no_update'}
+        ),
+        Str(
             'ca_renewal_master_server?',
             label=_('IPA CA renewal master'),
             doc=_('Renewal master for IPA certificate authority'),
             flags={'virtual_attribute', 'no_create'}
         ),
         Str(
-            'pkinit_server_server*',
-            label=_('IPA master capable of PKINIT'),
-            doc=_('IPA master which can process PKINIT requests'),
+            'kra_server_server*',
+            label=_('IPA KRA servers'),
+            doc=_('IPA servers configured as key recovery agent'),
+            flags={'virtual_attribute', 'no_create', 'no_update'}
+        ),
+        Str(
+            'kra_server_hidden_server*',
+            label=_('Hidden IPA KRA servers'),
+            doc=_('Hidden IPA servers configured as key recovery agent'),
             flags={'virtual_attribute', 'no_create', 'no_update'}
         ),
         Str(
@@ -279,7 +303,25 @@ class config(LDAPObject):
             label=_('Domain resolution order'),
             doc=_('colon-separated list of domains used for short name'
                   ' qualification')
-        )
+        ),
+        Str(
+            'dns_server_server*',
+            label=_('IPA DNS servers'),
+            doc=_('IPA servers configured as domain name server'),
+            flags={'virtual_attribute', 'no_create', 'no_update'}
+        ),
+        Str(
+            'dns_server_hidden_server*',
+            label=_('Hidden IPA DNS servers'),
+            doc=_('Hidden IPA servers configured as domain name server'),
+            flags={'virtual_attribute', 'no_create', 'no_update'}
+        ),
+        Str(
+            'dnssec_key_master_server?',
+            label=_('IPA DNSSec key master'),
+            doc=_('DNSec key master'),
+            flags={'virtual_attribute', 'no_create', 'no_update'}
+        ),
     )
 
     def get_dn(self, *keys, **kwargs):
@@ -288,9 +330,20 @@ class config(LDAPObject):
     def update_entry_with_role_config(self, role_name, entry_attrs):
         backend = self.api.Backend.serverroles
 
-        role_config = backend.config_retrieve(role_name)
+        try:
+            role_config = backend.config_retrieve(role_name)
+        except errors.EmptyResult:
+            # No role config means current user identity
+            # has no rights to see it, return with no action
+            return
+
         for key, value in role_config.items():
-            entry_attrs.update({key: value})
+            try:
+                entry_attrs.update({key: value})
+            except errors.EmptyResult:
+                # An update that doesn't change an entry is fine here
+                # Just ignore and move to the next key pair
+                pass
 
 
     def show_servroles_attributes(self, entry_attrs, *roles, **options):
@@ -549,7 +602,8 @@ class config_mod(LDAPUpdate):
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
         self.obj.show_servroles_attributes(
-            entry_attrs, "CA server", "IPA master", "NTP server", **options)
+            entry_attrs, "CA server", "KRA server", "IPA master",
+            "NTP server", "DNS server", **options)
         return dn
 
 
@@ -559,5 +613,6 @@ class config_show(LDAPRetrieve):
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
         self.obj.show_servroles_attributes(
-            entry_attrs, "CA server", "IPA master", "NTP server", **options)
+            entry_attrs, "CA server", "KRA server", "IPA master",
+            "NTP server", "DNS server", **options)
         return dn

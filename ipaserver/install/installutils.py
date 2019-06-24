@@ -599,18 +599,25 @@ def get_directive(filename, directive, separator=' '):
     fd.close()
     return None
 
+
 def kadmin(command):
-    return ipautil.run(["kadmin.local", "-q", command,
-                        "-x", "ipa-setup-override-restrictions"],
-                       capture_output=True,
-                       capture_error=True)
+    return ipautil.run(
+        [
+            paths.KADMIN_LOCAL, "-q", command,
+            "-x", "ipa-setup-override-restrictions"
+        ],
+        capture_output=True,
+        capture_error=True
+    )
 
 
 def kadmin_addprinc(principal):
     return kadmin("addprinc -randkey " + principal)
 
+
 def kadmin_modprinc(principal, options):
     return kadmin("modprinc " + options + " " + principal)
+
 
 def create_keytab(path, principal):
     try:
@@ -832,7 +839,7 @@ def expand_replica_info(filename, password):
     tarfile = top_dir+"/files.tar"
     dir_path = top_dir + "/realm_info"
     decrypt_file(filename, tarfile, password, top_dir)
-    ipautil.run(["tar", "xf", tarfile, "-C", top_dir])
+    ipautil.run([paths.TAR, "xf", tarfile, "-C", top_dir])
     os.remove(tarfile)
 
     return top_dir, dir_path
@@ -1642,3 +1649,14 @@ def default_subject_base(realm_name):
 
 def default_ca_subject_dn(subject_base):
     return DN(('CN', 'Certificate Authority'), subject_base)
+
+
+def validate_mask():
+    try:
+        mask = os.umask(0)
+    finally:
+        os.umask(mask)
+    mask_str = None
+    if mask & 0b111101101 > 0:
+        mask_str = "{:04o}".format(mask)
+    return mask_str

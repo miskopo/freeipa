@@ -24,11 +24,18 @@ from ipalib.constants import IPAAPI_USER
 
 from ipaplatform.paths import paths
 
+from ipapython.dn import DN
+
 from ipatests.test_integration.base import IntegrationTest
 from ipatests.pytest_ipa.integration import tasks
 from ipatests.pytest_ipa.integration.create_external_ca import ExternalCA
 
 logger = logging.getLogger(__name__)
+
+# from ipaserver.masters
+CONFIGURED_SERVICE = u'configuredService'
+ENABLED_SERVICE = u'enabledService'
+HIDDEN_SERVICE = u'hiddenService'
 
 
 class TestIPACommand(IntegrationTest):
@@ -284,9 +291,10 @@ class TestIPACommand(IntegrationTest):
         """
         Integration test for https://pagure.io/SSSD/sssd/issue/3747
         """
-
+        tmpdir = str(tmpdir)
         test_user = 'test-ssh'
-        master = self.master.hostname
+        external_master_hostname = \
+            self.master.external_hostname  # pylint: disable=no-member
 
         pub_keys = []
 
@@ -316,13 +324,13 @@ class TestIPACommand(IntegrationTest):
         # first connection attempt is a workaround for
         # https://pagure.io/SSSD/sssd/issue/3669
         try:
-            sshcon.connect(master, username=test_user,
+            sshcon.connect(external_master_hostname, username=test_user,
                            key_filename=first_priv_key_path, timeout=1)
         except (paramiko.AuthenticationException, paramiko.SSHException):
             pass
 
         try:
-            sshcon.connect(master, username=test_user,
+            sshcon.connect(external_master_hostname, username=test_user,
                            key_filename=first_priv_key_path, timeout=1)
         except (paramiko.AuthenticationException,
                 paramiko.SSHException) as e:
@@ -497,3 +505,38 @@ class TestIPACommand(IntegrationTest):
         )
         assert result.returncode != 0
         assert 'HBAC rule not found' in result.stderr_text
+
+    def test_config_show_configured_services(self):
+        # https://pagure.io/freeipa/issue/7929
+        states = {CONFIGURED_SERVICE, ENABLED_SERVICE, HIDDEN_SERVICE}
+        dn = DN(
+            ('cn', 'HTTP'), ('cn', self.master.hostname), ('cn', 'masters'),
+            ('cn', 'ipa'), ('cn', 'etc'),
+            self.master.domain.basedn  # pylint: disable=no-member
+        )
+
+        conn = self.master.ldap_connect()
+        entry = conn.get_entry(dn)  # pylint: disable=no-member
+
+        # original setting and all settings without state
+        orig_cfg = list(entry['ipaConfigString'])
+        other_cfg = [item for item in orig_cfg if item not in states]
+
+        try:
+            # test with hidden
+            cfg = [HIDDEN_SERVICE]
+            cfg.extend(other_cfg)
+            entry['ipaConfigString'] = cfg
+            conn.update_entry(entry)  # pylint: disable=no-member
+            self.master.run_command(['ipa', 'config-show'])
+
+            # test with configured
+            cfg = [CONFIGURED_SERVICE]
+            cfg.extend(other_cfg)
+            entry['ipaConfigString'] = cfg
+            conn.update_entry(entry)  # pylint: disable=no-member
+            self.master.run_command(['ipa', 'config-show'])
+        finally:
+            # reset
+            entry['ipaConfigString'] = orig_cfg
+            conn.update_entry(entry)  # pylint: disable=no-member

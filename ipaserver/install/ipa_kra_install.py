@@ -41,6 +41,7 @@ from ipaserver.install.installutils import create_replica_config
 from ipaserver.install import dogtaginstance
 from ipaserver.install import kra
 from ipaserver.install.installutils import ReplicaConfig
+from ipaserver.masters import find_providing_server
 
 logger = logging.getLogger(__name__)
 
@@ -206,8 +207,14 @@ class KRAInstaller(KRAInstall):
                 config.subject_base = attrs.get('ipacertificatesubjectbase')[0]
 
             if config.kra_host_name is None:
-                config.kra_host_name = service.find_providing_server(
-                    'KRA', api.Backend.ldap2, api.env.ca_host)
+                config.kra_host_name = find_providing_server(
+                    'KRA', api.Backend.ldap2, [api.env.ca_host]
+                )
+                if config.kra_host_name is None:
+                    # all CA/KRA servers are down or unreachable.
+                    raise admintool.ScriptError(
+                        "Failed to find an active KRA server!"
+                    )
             custodia = custodiainstance.get_custodia_instance(
                 config, custodiainstance.CustodiaModes.KRA_PEER)
         else:
@@ -232,6 +239,6 @@ class KRAInstaller(KRAInstall):
         api.Backend.ldap2.connect()
 
         # Enable configured services and update DNS SRV records
-        service.enable_services(api.env.host)
+        service.sync_services_state(api.env.host)
         api.Command.dns_update_system_records()
         api.Backend.ldap2.disconnect()

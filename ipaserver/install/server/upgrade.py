@@ -348,6 +348,25 @@ def upgrade_adtrust_config():
     except ipautil.CalledProcessError as e:
         logger.warning("Error updating Samba registry: %s", e)
 
+    logger.info("[Update 'max smbd processes' in Samba configuration "
+                "to prevent unlimited SMBLoris attack amplification]")
+
+    args = [paths.NET, "conf", "getparm", "global", "max smbd processes"]
+
+    try:
+        ipautil.run(args)
+    except ipautil.CalledProcessError as e:
+        if e.returncode == 255:
+            # 'max smbd processes' does not exist
+            args = [paths.NET, "conf", "setparm", "global",
+                    "max smbd processes", "1000"]
+            try:
+                ipautil.run(args)
+            except ipautil.CalledProcessError as e:
+                logger.warning("Error updating Samba registry: %s", e)
+        else:
+            logger.warning("Error updating Samba registry: %s", e)
+
 
 def ca_configure_profiles_acl(ca):
     logger.info('[Authorizing RA Agent to modify profiles]')
@@ -1244,8 +1263,8 @@ def uninstall_dogtag_9(ds, http):
         logger.debug('Dogtag is version 10 or above')
         return
 
-    dn = DN(('cn', 'CA'), ('cn', api.env.host), ('cn', 'masters'),
-            ('cn', 'ipa'), ('cn', 'etc'), api.env.basedn)
+    dn = DN(('cn', 'CA'), ('cn', api.env.host), api.env.container_masters,
+            api.env.basedn)
     try:
         api.Backend.ldap2.delete_entry(dn)
     except ipalib.errors.PublicError as e:
@@ -1689,12 +1708,12 @@ def update_replica_config(db_suffix):
 
 def add_systemd_user_hbac():
     logger.info('[Create systemd-user hbac service and rule]')
-    rule = 'allow_systemd-user'
-    service = 'systemd-user'
+    rule = u'allow_systemd-user'
+    service = u'systemd-user'
     try:
         api.Command.hbacsvc_add(
             service,
-            description='pam_systemd and systemd user@.service'
+            description=u'pam_systemd and systemd user@.service'
         )
     except ipalib.errors.DuplicateEntry:
         logger.info('hbac service %s already exists', service)
@@ -1707,10 +1726,10 @@ def add_systemd_user_hbac():
     try:
         api.Command.hbacrule_add(
             rule,
-            description=('Allow pam_systemd to run user@.service to create '
+            description=(u'Allow pam_systemd to run user@.service to create '
                          'a system user session'),
-            usercategory='all',
-            hostcategory='all',
+            usercategory=u'all',
+            hostcategory=u'all',
         )
     except ipalib.errors.DuplicateEntry:
         logger.info('hbac rule %s already exists', rule)
@@ -1782,6 +1801,8 @@ def upgrade_configuration():
         DOGTAG_PORT=8009,
         CLONE='#',
         WSGI_PROCESSES=constants.WSGI_PROCESSES,
+        IPA_CCACHES=paths.IPA_CCACHES,
+        IPA_CUSTODIA_SOCKET=paths.IPA_CUSTODIA_SOCKET
     )
 
     subject_base = find_subject_base()
