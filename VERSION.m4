@@ -20,8 +20,8 @@
 #  ->  "1.0.0"                                         #
 ########################################################
 define(IPA_VERSION_MAJOR, 4)
-define(IPA_VERSION_MINOR, 8)
-define(IPA_VERSION_RELEASE, 4)
+define(IPA_VERSION_MINOR, 9)
+define(IPA_VERSION_RELEASE, 0)
 
 ########################################################
 # For 'pre' releases the version will be               #
