@@ -31,10 +31,6 @@ topologies:
     name: ad_master_2client
     cpu: 4
     memory: 12000
-  ad_master: &ad_master
-    name: ad_master
-    cpu: 4
-    memory: 12000
 
 jobs:
   fedora-30/build:
@@ -264,7 +260,7 @@ jobs:
         build_url: '{fedora-30/build_url}'
         test_suite: test_integration/test_smb.py
         template: *ci-master-f30
-        timeout: 7200
+        timeout: 4800
         topology: *ad_master_2client
 
   fedora-30/test_server_del:

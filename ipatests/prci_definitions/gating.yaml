@@ -15,10 +15,6 @@ topologies:
     name: ad_master_2client
     cpu: 4
     memory: 12000
-  ipaserver: &ipaserver
-    name: ipaserver
-    cpu: 2
-    memory: 2400
 
 jobs:
   fedora-30/build:
@@ -231,13 +227,13 @@ jobs:
     requires: [fedora-30/build]
     priority: 100
     job:
-      class: RunPytest
+      class: RunADTests
       args:
         build_url: '{fedora-30/build_url}'
         test_suite: test_integration/test_replica_promotion.py::TestSubCAkeyReplication
         template: *ci-master-f30
-        timeout: 3600
-        topology: *master_1repl
+        timeout: 4800
+        topology: *ad_master_2client
 
   fedora-30/dnssec:
     requires: [fedora-30/build]
