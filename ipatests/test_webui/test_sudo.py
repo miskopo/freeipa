@@ -133,3 +133,13 @@ class test_sudo(UI_driver):
         self.disable_action()
         self.enable_action()
         self.delete_action(sudo.RULE_ENTITY, sudo.RULE_PKEY)
+
+    @screenshot
+    def test_autosave(self):
+        """
+        Test autosave is active and "Save" button is disabled
+        """
+        self.init_app()
+        self.add_record(sudo.RULE_ENTITY, sudo.RULE_DATA)
+        save_btn = self.find("save", by="name")
+        assert save_btn.get_attribute("disabled")
