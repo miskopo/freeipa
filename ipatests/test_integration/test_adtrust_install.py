@@ -272,3 +272,37 @@ class TestIpaAdTrustInstall(IntegrationTest):
         finally:
             tasks.kinit_admin(self.master)
             self.master.run_command(['ipa', 'user-del', user])
+
+    def test_adtrust_agents_are_recreated_after_upgrade(self):
+        """Test if adtrust agents, which are removed form LDAP prior to
+        an upgrade, are recreated after the upgrade"""
+        passwd = 'Secret123'
+        host = self.replicas[0]
+        self.unconfigure_replica_as_agent(host)
+        res = self.master.run_command(['ipa-adtrust-install',
+                                       '--add-agents', '--add-sids',
+                                       '-a', passwd, '-U'])
+        assert "Setup complete" in res.stdout_text
+
+        search_trust_agents = textwrap.dedent("""
+        dn: cn=adtrust agents,cn=sysaccounts,cn=etc,{base_dn}
+        """.format(base_dn=host.domain.basedn))
+        tasks.ldapsearch_dm(host, host.domain.basedn,
+                            search_trust_agents, ok_returncode=[0])
+        # there is no need to check if trust agents were present prior to
+        # removal as ldapmodify would return code 16 if they weren't
+        remove_trust_agents = textwrap.dedent("""
+             dn: cn=adtrust agents,cn=sysaccounts,cn=etc,{base_dn}
+             changetype: modify
+             delete: member
+             member: fqdn={hostname},cn=computers,cn=accounts,{base_dn}
+             """.format(base_dn=host.domain.basedn, hostname=host.hostname))
+        tasks.ldapmodify_dm(host, remove_trust_agents,
+                            ok_returncode=[0])
+        # execute ipa-upgrade
+        tasks.kinit_admin(self.master)
+        self.master.run_command(['ipa-server-upgrade', '--force'])
+        # check if entry was recreated
+
+        tasks.ldapsearch_dm(host, host.domain.basedn,
+                            search_trust_agents, ok_returncode=[0])
