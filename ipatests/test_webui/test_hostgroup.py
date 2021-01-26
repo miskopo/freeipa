@@ -20,17 +20,17 @@
 """
 Hostgroup tests
 """
+import pytest
 
-from ipatests.test_webui.ui_driver import UI_driver
-from ipatests.test_webui.ui_driver import screenshot
 import ipatests.test_webui.data_group as group
-import ipatests.test_webui.data_hostgroup as hostgroup
-from ipatests.test_webui.test_host import host_tasks, ENTITY as HOST_ENTITY
-import ipatests.test_webui.data_netgroup as netgroup
 import ipatests.test_webui.data_hbac as hbac
+import ipatests.test_webui.data_hostgroup as hostgroup
+import ipatests.test_webui.data_netgroup as netgroup
 import ipatests.test_webui.data_sudo as sudo
 import ipatests.test_webui.data_user as user
-import pytest
+from ipatests.test_webui.test_host import host_tasks, ENTITY as HOST_ENTITY
+from ipatests.test_webui.ui_driver import UI_driver
+from ipatests.test_webui.ui_driver import screenshot
 
 
 def check_invalid_names(self, names, error_link):

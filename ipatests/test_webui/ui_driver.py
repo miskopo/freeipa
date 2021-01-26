@@ -41,6 +41,7 @@ try:
     from selenium.common.exceptions import UnexpectedAlertPresentException
     from selenium.common.exceptions import WebDriverException
     from selenium.common.exceptions import ElementClickInterceptedException
+    from selenium.common.exceptions import TimeoutException
     from selenium.webdriver.common.action_chains import ActionChains
     from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
     from selenium.webdriver.common.keys import Keys
@@ -720,10 +721,20 @@ class UI_driver:
 
         Chooses last dialog if none is supplied
         """
-        if not dialog:
-            dialog = self.get_dialog(strict=True)
 
         s = ".rcue-dialog-buttons button[name='%s']" % name
+        if not dialog:
+            dialog = self.get_dialog(strict=True)
+        if dialog:
+            attempt_counter = 4
+            while attempt_counter > 0:
+                try:
+                    self._button_click(s, dialog, name)
+                except TimeoutException:
+                    attempt_counter -= 1
+                    continue
+                else:
+                    return
         self._button_click(s, dialog, name)
 
     def action_button_click(self, name, parent):
