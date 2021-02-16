@@ -2007,6 +2007,43 @@ class UI_driver:
             cmd=cmd
         )
 
+    def add_user_auth_type(self, auth_type, save=False):
+        """
+        Select user auth type
+        :param auth_type: one of password, radius, otp, pkinit or hardened
+        """
+        s_checkbox = 'div[name="ipauserauthtype"] input[value="{}"]'.format(
+            auth_type)
+        checkbox = self.find(s_checkbox, By.CSS_SELECTOR, strict=True)
+        if not checkbox.is_selected():
+            checkbox.click()
+        if save:
+            self.facet_button_click('save')
+
+    def remove_user_auth_type(self, auth_type, save=False):
+        """
+        Deselect user auth type
+        :param auth_type: one of password, radius, otp, pkinit or hardened
+        """
+        s_checkbox = 'div[name="ipauserauthtype"] input[value="{}"]'.format(
+            auth_type)
+        checkbox = self.find(s_checkbox, By.CSS_SELECTOR, strict=True)
+        if checkbox.is_selected():
+            checkbox.click()
+        if save:
+            self.facet_button_click('save')
+
+    def undo_user_auth_type(self, save=False):
+        """
+        Undo user auth type selection
+        """
+        s_undo = 'div[name="ipauserauthtype" button[name="undo"]'
+        undo = self.find(s_undo, By.CSS_SELECTOR, strict=True)
+        undo.click()
+        self.wait(0.6)
+        if save:
+            self.facet_button_click('save')
+
     @dismiss_unexpected_alert
     def has_class(self, el, cls):
         """
@@ -2369,3 +2406,14 @@ class UI_driver:
             else:
                 assert value in checked_values, ('{} NOT checked while it '
                                                  'should be'.format(value))
+
+    def assert_user_auth_type(self, auth_type, enabled=True):
+        """
+        Check if provided auth type is enabled or disabled for the user
+        :param auth_type: one of password, radius, otp, pkinit or hardened
+        :param enabled: check if enabled if True, check for disabled if False
+        """
+        s_checkbox = 'div[name="ipauserauthtype"] input[value="{}"]'.format(
+            auth_type)
+        checkbox = self.find(s_checkbox, By.CSS_SELECTOR, strict=True)
+        assert checkbox.is_selected() == enabled
