@@ -58,6 +58,17 @@ def server_install_setup(func):
     return wrapped
 
 
+@pytest.fixture
+def server_cleanup(request):
+    """
+    Fixture to uninstall ipa server before and after the test
+    """
+    host = request.cls.master
+    tasks.uninstall_master(host)
+    yield
+    tasks.uninstall_master(host)
+
+
 class InstallTestBase1(IntegrationTest):
 
     num_replicas = 3
@@ -662,7 +673,6 @@ def get_pki_tomcatd_pid(host):
             break
     return(pid)
 
-
 def get_ipa_services_pids(host):
     ipa_services_name = [
         "krb5kdc", "kadmin", "named", "httpd", "ipa-custodia",
@@ -1119,6 +1129,108 @@ class TestInstallMaster(IntegrationTest):
                 expected_stdout=f'href="https://{self.master.hostname}/'
             )
 
+    def test_hostname_parameter(self, server_cleanup):
+        """
+        Test that --hostname parameter is respected in interactive mode.
+
+        https://pagure.io/freeipa/issue/2692
+        """
+        original_hostname = self.master.hostname
+        new_hostname = "new." + original_hostname
+        """New hostname is added into /etc/hosts as the installer
+        is looking for it for resolution. Without it, an installation
+        fails with `Unable to resolve host name, check /etc/hosts or DNS
+        name resolution`."""
+        hosts = self.master.get_file_contents('/etc/hosts', encoding='utf-8')
+        new_hosts = str(hosts).replace(original_hostname, new_hostname)
+        self.master.put_file_contents('/etc/hosts', new_hosts)
+        try:
+            cmd = ['ipa-server-install', '--hostname', new_hostname]
+            with self.master.spawn_expect(cmd) as e:
+                e.expect_exact('Do you want to configure integrated '
+                               'DNS (BIND)? [no]: ')
+                e.sendline('no')
+                e.expect_exact('Please confirm the domain name [{}]: '.format(
+                    self.master.hostname
+                ))
+                e.sendline(self.master.domain.name)
+                e.expect_exact('Please provide a realm name [{}]: '.format(
+                    self.master.domain.realm
+                ))
+                e.sendline(self.master.domain.realm)
+                e.expect_exact('Directory Manager password: ')
+                e.sendline(self.master.config.dirman_password)
+                e.expect_exact('Password (confirm): ')
+                e.sendline(self.master.config.dirman_password)
+                e.expect_exact('IPA admin password: ')
+                e.sendline(self.master.config.admin_password)
+                e.expect_exact('Password (confirm): ')
+                e.sendline(self.master.config.admin_password)
+                e.expect_exact('Do you want to configure chrony with '
+                               'NTP server or pool address? [no]: ')
+                e.sendline('no')
+                e.expect_exact('Continue to configure the system '
+                               'with these values? [no]: ')
+                e.sendline('yes')
+                e.expect_exit(ignore_remaining_output=True, timeout=720)
+            hostname = self.master.run_command([
+                'hostname', '-f']).stdout_text.strip()
+            assert hostname == new_hostname
+        finally:
+            self.master.hostname = original_hostname
+            self.master.put_file_contents('/etc/hosts', hosts)
+
+    def test_ad_subpackage_dependency(self, server_cleanup):
+        """
+        Test if the installer is not dependant on trust-ad package and
+        succeeds even when AD subpackage is not installed
+
+        https://pagure.io/freeipa/issue/4011
+        """
+        package_name = "*ipa-server-trust-ad"
+        reinstall = False
+        if tasks.is_package_installed(self.master, package_name):
+            tasks.uninstall_packages(self.master, [package_name])
+            reinstall = True
+        tasks.install_master(self.master)
+        if reinstall:
+            tasks.install_packages(self.master, [package_name])
+
+    def test_backup_of_cs_cfg_should_be_created(self, server_cleanup):
+        """
+        Test that the installer backs up CS.cfg configuration before it's
+        being modified.
+
+        https://pagure.io/freeipa/issue/4166
+        """
+        bcp_location = paths.CA_CS_CFG_PATH + ".ipabkp"
+        tasks.install_master(self.master)
+        ipaserver_install_log = str(self.master.get_file_contents(
+            paths.IPASERVER_INSTALL_LOG, encoding='utf-8'))
+        assert "backing up CS.cfg" in ipaserver_install_log
+        assert self.master.transport.file_exists(bcp_location)
+
+    @pytest.mark.skip_if_container(
+        "any",
+        reason="kernel keyrings are not namespaced yet")
+    def test_update_krb5_conf_with_default_ccache_name(self, server_cleanup):
+        """
+        Installer should update krb5.conf.template to support
+        KEYRING default_ccache_name.
+
+        https://pagure.io/freeipa/issue/4013
+        """
+        tasks.install_master(self.master)
+        tasks.kinit_admin(self.master)
+        klist = self.master.run_command(['klist']).stdout_text
+        assert '/tmp/' not in klist
+        krb5conf = self.master.get_file_contents(paths.KRB5_CONF,
+                                                 encoding='utf-8')
+        assert re.search(
+            r"^ default_ccache_name = KEYRING:persistent:%{uid}",
+            krb5conf, re.MULTILINE) is not None, \
+            "default_ccache_name is incorrectly set in krb5.conf"
+
 
 class TestInstallMasterKRA(IntegrationTest):
 
@@ -1215,6 +1327,60 @@ class TestInstallMasterDNS(IntegrationTest):
 
     def test_install_kra(self):
         tasks.install_kra(self.master, first_instance=True)
+
+    def test_installer_wizard_prompts_for_DNS(self, server_cleanup):
+        """
+        Installer wizard should prompt for DNS even if --setup-dns is not
+        provided as an argument.
+
+        https://pagure.io/freeipa/issue/2575
+        """
+        cmd = ['ipa-server-install']
+        with self.master.spawn_expect(cmd) as e:
+            e.expect_exact('Do you want to configure integrated '
+                           'DNS (BIND)? [no]: ')
+            e.sendline('yes')
+            e.expect_exact('Server host name [{}]: '.format(
+                self.master.hostname))
+            e.sendline(self.master.hostname)
+            e.expect_exact('Please confirm the domain name [{}]: '.format(
+                self.master.domain.name))
+            e.sendline(self.master.domain.name)
+            e.expect_exact('Please provide a realm name [{}]: '.format(
+                self.master.domain.realm
+            ))
+            e.sendline(self.master.domain.realm)
+
+            e.expect_exact('Directory Manager password: ')
+            e.sendline(self.master.config.dirman_password)
+            e.expect_exact('Password (confirm): ')
+            e.sendline(self.master.config.dirman_password)
+
+            e.expect_exact('IPA admin password: ')
+            e.sendline(self.master.config.admin_password)
+            e.expect_exact('Password (confirm): ')
+            e.sendline(self.master.config.admin_password)
+
+            e.expect_exact(
+                'Do you want to configure DNS forwarders? [yes]: ')
+            e.sendline('no')  # irrelevant for this test
+            e.expect_exact('Do you want to search for missing reverse '
+                           'zones? [yes]: ')
+            e.sendline('no')  # irrelevant for this test
+            e.expect_exact('Do you want to configure chrony with NTP '
+                           'server or pool address? [no]: ')
+            e.sendline('no')  # irrelevant for this test
+            e.expect_exact('Continue to configure the system with these '
+                           'values? [no]: ')
+            e.sendline('yes')
+            e.expect_exit(ignore_remaining_output=True, timeout=720)
+
+        tasks.kinit_admin(self.master)
+        result = self.master.run_command(
+            ['ipa', 'dnszone-show', self.master.domain.name]
+        ).stdout_text
+
+        assert "Active zone: TRUE" in result
 
 
 class TestInstallMasterDNSRepeatedly(IntegrationTest):
