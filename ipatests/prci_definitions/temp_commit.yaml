@@ -61,14 +61,39 @@ jobs:
         timeout: 1800
         topology: *build
 
-  fedora-latest/temp_commit:
+  fedora-latest/test_webui_host:
+    requires: [fedora-latest/build]
+    priority: 50
+    job:
+      class: RunWebuiTests
+      args:
+        build_url: '{fedora-latest/build_url}'
+        test_suite: test_webui/test_host.py
+        template: *ci-master-latest
+        timeout: 3600
+        topology: *ipaserver
+
+  fedora-latest/test_webui_host-caless:
+    requires: [fedora-latest/build]
+    priority: 50
+    job:
+      class: RunWebuiTests
+      args:
+        build_url: '{fedora-latest/build_url}'
+        test_suite: test_webui/test_host.py
+        template: *ci-master-latest
+        timeout: 3600
+        topology: *ipaserver
+        caless: yes
+
+  fedora-latest/test_advise:
     requires: [fedora-latest/build]
     priority: 50
     job:
       class: RunPytest
       args:
         build_url: '{fedora-latest/build_url}'
-        test_suite: test_integration/test_REPLACEME.py
+        test_suite: test_integration/test_advise.py
         template: *ci-master-latest
-        timeout: 3600
+        timeout: 7200
         topology: *master_1repl_1client
