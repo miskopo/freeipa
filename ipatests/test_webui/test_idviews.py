@@ -90,6 +90,37 @@ class test_idviews(UI_driver):
         self.delete(group.ENTITY, [group.DATA])
 
     @screenshot
+    def test_paging(self):
+        """
+        Test if the view is correctly paginated, i.e. every 20 entries are
+        on a separate page.
+        """
+        self.init_app()
+
+        self.add_record(idview.ENTITY, idview.DATA, navigate=False)
+
+        no_of_users = 50
+        users_per_page = 20
+        # create no_of_users users
+        for i in range(no_of_users):
+            modified_data = user.DATA
+            modified_data['pkey'] = user.PKEY + str(i)
+            self.add_record(user.ENTITY, modified_data, navigate=False)
+
+        self.navigate_to_record(idview.PKEY)
+        parent_entity = 'idview'
+
+        for i in range(no_of_users):
+            modified_data = DATA_USER
+            modified_data['pkey'] = user.PKEY + str(i)
+            self.add_record(parent_entity, modified_data,
+                            facet=idview.USER_FACET)
+
+        assert self.get_text(
+            "paginate_of") == no_of_users // users_per_page + 1 if \
+            no_of_users % users_per_page > 0 else 0
+
+    @screenshot
     def test_hosts(self):
         """
         Apply to hosts and host groups
